@@ -1,0 +1,85 @@
+import numpy as np  # For numerical computations
+import pandas as pd  # For data handling
+import yfinance as yf  # For fetching stock data from Yahoo Finance
+import matplotlib.pyplot as plt  # For data visualization
+from sklearn.preprocessing import MinMaxScaler  # Feature scaling
+from sklearn.metrics import mean_squared_error, r2_score  # Model evaluation metrics
+from tensorflow.keras.models import Sequential  # Deep learning model
+from tensorflow.keras.layers import LSTM, Dense, Dropout, Bidirectional  # LSTM layers
+from tensorflow.keras.callbacks import EarlyStopping  # Stops training if validation loss stops improving
+
+# Define the stock symbol and fetch historical data
+stock_symbol = "AAPL"  # Apple stock data
+df = yf.download(stock_symbol, start="2015-01-01", end="2024-01-01")
+
+df = df[['Close']]  # Use only 'Close' prices for stability and relevance
+df.head()
+
+# Apply MinMax Scaling to normalize data between 0 and 1 (needed for LSTM)
+scaler = MinMaxScaler(feature_range=(0,1))
+df_scaled = scaler.fit_transform(df)
+
+# Function to create sliding window sequences for sequential modeling
+def create_sequences(data, time_step=60):
+    X, y = [], []
+    for i in range(len(data) - time_step):
+        X.append(data[i:i+time_step])  # Use previous 'time_step' days as input
+        y.append(data[i+time_step])    # Target is the next day's price
+    return np.array(X), np.array(y)  # X - input prices, y - next price
+
+# Define sequence length
+time_step = 60  # Use previous 60 days to predict the next day
+X, y = create_sequences(df_scaled, time_step)
+
+# Split data into training (80%) and testing (20%) sets
+train_size = int(len(X) * 0.8)
+X_train, X_test = X[:train_size], X[train_size:]
+y_train, y_test = y[:train_size], y[train_size:]
+
+# Reshape input data to fit LSTM model (samples, time steps, features)
+X_train = X_train.reshape(X_train.shape[0], X_train.shape[1], 1)
+X_test = X_test.reshape(X_test.shape[0], X_test.shape[1], 1)
+
+# Build the LSTM model
+model = Sequential([
+    LSTM(50, return_sequences=True, input_shape=(time_step, 1)),  # First LSTM layer
+    Dropout(0.2),  # Dropout to reduce overfitting
+    LSTM(50, return_sequences=True),  # Second LSTM layer
+    Dropout(0.2),
+    LSTM(50),  # Third LSTM layer
+    Dropout(0.2),
+    Dense(1)  # Output layer predicting the next price
+])
+
+# Compile the model
+model.compile(optimizer='adam', loss='mean_squared_error')
+
+# Early stopping to prevent overfitting
+early_stop = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
+
+# Train the model
+model.fit(X_train, y_train, epochs=50, batch_size=32, validation_data=(X_test, y_test), callbacks=[early_stop])
+
+# Predict stock prices on the test data
+y_pred = model.predict(X_test)
+
+# Convert predictions and actual values back to original scale
+y_pred = scaler.inverse_transform(y_pred)
+y_test_actual = scaler.inverse_transform(y_test.reshape(-1,1))
+
+# Calculate performance metrics
+rmse = np.sqrt(mean_squared_error(y_test_actual, y_pred))  # RMSE (lower is better)
+r2 = r2_score(y_test_actual, y_pred)  # R² Score (closer to 1 is better)
+
+print(f"RMSE: {rmse:.4f}")
+print(f"R² Score: {r2:.4f}")
+
+# Plot actual vs predicted prices
+plt.figure(figsize=(10,5))
+plt.plot(y_test_actual, label="Actual Prices", color="blue")
+plt.plot(y_pred, label="Predicted Prices", color="red")
+plt.xlabel("Time")
+plt.ylabel("Stock Price")
+plt.legend()
+plt.title(f"LSTM Stock Price Prediction for {stock_symbol}")
+plt.show()
